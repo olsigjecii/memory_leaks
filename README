@@ -27,7 +27,6 @@ git clone <repository_url>
 cd memory_leaks
 ```
 
-
 ```bash
 cargo build --release
 Run the Application:
@@ -58,10 +57,7 @@ echo "Done."
 
 # Expected Outcome (Vulnerable) 💣
 # Server Logs: You will see the message "CACHE MISS: Fetching user... from the database..." for every single request, followed by "VULNERABLE: Storing user... in unbounded cache.".
-
 ```
-
-
 
 Memory Usage: You will observe the memory usage of the rust_memory_leak_demo process climbing steadily and not decreasing. Each request adds ~100 KB to the process's memory. This is the memory leak in action. Given enough requests, the application will crash.
 
@@ -79,7 +75,6 @@ cargo run --release
 
 Send Requests to the Secure Endpoint: Run a similar script, but this time targeting the /secure/user/{id} endpoint.
 
-
 ```bash
 for i in {1..10000}; do
   curl -s -o /dev/null http://127.0.0.1:8080/secure/user/$i
@@ -91,7 +86,5 @@ echo "Done."
 ```
 
 Memory Usage: The application's memory usage will remain low and stable. It will not grow with each request because no data is being fetched or cached.
-
 Client Response: You will still get a 403 Forbidden response, but the server is protected from resource exhaustion.
-
 By checking permissions first and using a bounded cache with a clear eviction policy, we have successfully mitigated the memory leak vulnerability.

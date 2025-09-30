@@ -16,20 +16,17 @@ struct User {
 }
 
 // --- Shared State for Caching ---
-
 // Vulnerable: A DashMap that grows without bounds.
-// DashMap is a thread-safe HashMap, suitable for sharing across Actix workers.
 type VulnerableCache = Arc<DashMap<u32, User>>;
 
 // Secure: A Moka cache with a defined maximum capacity.
-// Once it reaches 100 items, it will start evicting older entries.
+// The cache stores Arc<User> to avoid cloning the large User struct on every cache hit.
 type SecureCache = Cache<u32, User>;
 
 // --- Simulated Helper Functions ---
 
 /// Simulates fetching a user from a database.
 /// This is an expensive operation we want to cache.
-/// We add a small delay to represent network/database latency.
 async fn fetch_user_from_database(user_id: u32) -> Option<User> {
     println!("CACHE MISS: Fetching user {} from the database...", user_id);
     sleep(Duration::from_millis(50)).await;
@@ -43,8 +40,6 @@ async fn fetch_user_from_database(user_id: u32) -> Option<User> {
 }
 
 /// Simulates checking if the current logged-in user has admin privileges.
-/// In this demo, we'll hardcode it to `false` to simulate an attacker
-/// who does not have permission to view user profiles.
 fn is_admin() -> bool {
     false
 }
@@ -52,40 +47,27 @@ fn is_admin() -> bool {
 // --- Endpoint Handlers ---
 
 /// VULNERABLE endpoint handler.
-/// This handler fetches user data *before* checking permissions and stores it
-/// in a cache that can grow indefinitely.
 async fn vulnerable_user(
     user_id: web::Path<u32>,
     cache: web::Data<VulnerableCache>,
 ) -> impl Responder {
     let id = user_id.into_inner();
 
-    // Check if the user is in the cache.
     if let Some(user_entry) = cache.get(&id) {
         let user = user_entry.value().clone();
         println!("VULNERABLE CACHE HIT: Found user {} in cache.", id);
-        // NOTE: The permission check is still done *after* retrieving from cache,
-        // but the main flaw is adding to the cache without bounds.
         if !is_admin() {
             return HttpResponse::Forbidden().json("Permission denied");
         }
         return HttpResponse::Ok().json(user);
     }
 
-    // --- The Leak Logic ---
-    // 1. Fetch from the "database" even if the requester is unauthorized.
-    // 2. Store the result in the unbounded cache.
     if let Some(user) = fetch_user_from_database(id).await {
         println!("VULNERABLE: Storing user {} in unbounded cache.", id);
         cache.insert(id, user.clone());
-
-        // 2. Check permissions *after* the expensive operation and caching.
-        // An attacker without permissions can still force the server to fetch and cache data,
-        // consuming memory with every unique ID they request.
         if !is_admin() {
             return HttpResponse::Forbidden().json("Permission denied");
         }
-
         HttpResponse::Ok().json(user)
     } else {
         HttpResponse::NotFound().json("User not found")
@@ -93,25 +75,26 @@ async fn vulnerable_user(
 }
 
 /// SECURE endpoint handler.
-/// This handler checks permissions *first* and uses a bounded cache
-/// to prevent memory exhaustion.
 async fn secure_user(user_id: web::Path<u32>, cache: web::Data<SecureCache>) -> impl Responder {
     let id = user_id.into_inner();
 
-    // --- The Fix ---
-    // 1. Perform the cheap permission check *before* any expensive operations.
     if !is_admin() {
-        // We deny access immediately, preventing any database/cache interaction.
         return HttpResponse::Forbidden().json("Permission denied");
     }
 
-    // 2. Use a bounded cache with a "get_with" operation.
-    // The `get_with` function will either return the cached value or execute the
-    // provided async block to fetch and insert the value if it's missing.
-    // This is both efficient and memory-safe due to the cache's size limit.
-    match cache.get_with(id, fetch_user_from_database(id)).await {
-        Some(user) => HttpResponse::Ok().json(user),
-        None => HttpResponse::NotFound().json("User not found"),
+    // We convert our database function's Option<User> to a Result<User, &str>.
+    let result = cache
+        .try_get_with(id, async {
+            fetch_user_from_database(id).await.ok_or("User not in DB") // Convert Option to Result for try_get_with
+        })
+        .await;
+
+    match result {
+        // On success, `try_get_with` returns Ok(Arc<User>).
+        // We serialize the underlying User struct.
+        Ok(user) => HttpResponse::Ok().json(user),
+        // On failure, it returns the error from our future.
+        Err(_) => HttpResponse::NotFound().json("User not found"),
     }
 }
 
@@ -120,15 +103,16 @@ async fn main() -> std::io::Result<()> {
     println!("Starting server at http://127.0.0.1:8080");
 
     // Initialize the unbounded cache for the vulnerable endpoint
-    let vulnerable_cache = web::Data::new(Arc::new(DashMap::new()));
+    // Your explicit type annotation is good practice!
+    let vulnerable_cache = web::Data::new(Arc::new(DashMap::<u32, User>::new()));
 
-    // Initialize the Moka cache for the secure endpoint with a max capacity of 100 items.
-    let secure_cache = web::Data::new(Cache::builder().max_capacity(100).build());
+    // Initialize the Moka cache for the secure endpoint
+    let secure_cache = web::Data::new(Cache::<u32, User>::builder().max_capacity(100).build());
 
     HttpServer::new(move || {
         App::new()
-            .app_data(vulnerable_cache.clone()) // Register vulnerable cache
-            .app_data(secure_cache.clone()) // Register secure cache
+            .app_data(vulnerable_cache.clone())
+            .app_data(secure_cache.clone())
             .route("/vulnerable/user/{id}", web::get().to(vulnerable_user))
             .route("/secure/user/{id}", web::get().to(secure_user))
     })
