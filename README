@@ -1,0 +1,97 @@
+# Memory Leaks in Rust with Actix-Web
+
+This project demonstrates how a logical memory leak can lead to a Denial-of-Service (DoS) vulnerability in a Rust actix_web application, and how to mitigate it effectively.
+
+📝 Lesson Summary
+A memory leak occurs when an application allocates memory but fails to release it after it's no longer needed, causing memory consumption to grow over time. While Rust's strict ownership model prevents many classic memory leaks, it cannot prevent logical leaks.
+
+In this lesson, we explore a common logical leak: an unbounded in-memory cache. An attacker can exploit this by requesting unique resources repeatedly, forcing the server to cache each one. Eventually, the server runs out of memory and crashes.
+
+This application demonstrates this vulnerability with two endpoints:
+
+/vulnerable/user/{id}: Uses a simple, unbounded DashMap for caching. It also performs authorization checks after fetching and caching data.
+
+/secure/user/{id}: Uses moka, a caching library with an eviction policy (a maximum size), and performs authorization checks before any expensive operations.
+
+⚙️ Setting Up the Demo Application
+Prerequisites
+You must have the Rust toolchain (including rustc and cargo) installed. You can get it from rustup.rs.
+
+Instructions
+Clone the Repository:
+
+Bash
+
+```bash
+git clone <repository_url>
+cd memory_leaks
+```
+
+
+```bash
+cargo build --release
+Run the Application:
+```
+
+```bash
+cargo run --release
+The server will start and listen on http://127.0.0.1:8080.
+```
+
+💥 Demonstrating the Vulnerability
+To see the memory leak in action, you will send a large number of requests for unique user IDs to the vulnerable endpoint.
+
+Run the Application: Make sure the server from the setup step is running.
+
+Monitor Memory Usage: Open a system monitoring tool (like htop on Linux, Activity Monitor on macOS, or Task Manager on Windows) and find the rust_memory_leak_demo process. Keep an eye on its memory consumption.
+
+Send Requests: In a new terminal, run the following bash script. It will request 10,000 different user profiles from the vulnerable endpoint.
+
+```bash
+for i in {1..10000}; do
+  # We use -s -o /dev/null to silence curl's output
+  curl -s -o /dev/null http://127.0.0.1:8080/vulnerable/user/$i
+  # Add a small delay to avoid overwhelming the network stack
+  sleep 0.01
+done
+echo "Done."
+
+# Expected Outcome (Vulnerable) 💣
+# Server Logs: You will see the message "CACHE MISS: Fetching user... from the database..." for every single request, followed by "VULNERABLE: Storing user... in unbounded cache.".
+
+```
+
+
+
+Memory Usage: You will observe the memory usage of the rust_memory_leak_demo process climbing steadily and not decreasing. Each request adds ~100 KB to the process's memory. This is the memory leak in action. Given enough requests, the application will crash.
+
+Client Response: Every request will receive a 403 Forbidden response, but the damage is already done on the server side.
+
+✅ Demonstrating the Mitigation
+Now, let's show how the secure endpoint prevents this issue.
+
+Restart the Application: Stop the server (Ctrl+C) and restart it to reset its memory.
+
+```bash
+cargo run --release
+# Monitor Memory Usage: Find the new process in your system monitor.
+```
+
+Send Requests to the Secure Endpoint: Run a similar script, but this time targeting the /secure/user/{id} endpoint.
+
+
+```bash
+for i in {1..10000}; do
+  curl -s -o /dev/null http://127.0.0.1:8080/secure/user/$i
+  sleep 0.01
+done
+echo "Done."
+# Expected Outcome (Secure) 🛡️
+# Server Logs: You will not see any messages about fetching from the database or storing items in the cache. The permission check fails immediately.
+```
+
+Memory Usage: The application's memory usage will remain low and stable. It will not grow with each request because no data is being fetched or cached.
+
+Client Response: You will still get a 403 Forbidden response, but the server is protected from resource exhaustion.
+
+By checking permissions first and using a bounded cache with a clear eviction policy, we have successfully mitigated the memory leak vulnerability.
