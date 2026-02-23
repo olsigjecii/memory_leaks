@@ -1,4 +1,4 @@
-# Memory Leaks in Rust with Actix-Web
+# Memory Leaks in Rust 🦀
 
 This project demonstrates how a logical memory leak can lead to a Denial-of-Service (DoS) vulnerability in a Rust actix_web application, and how to mitigate it effectively.
 
